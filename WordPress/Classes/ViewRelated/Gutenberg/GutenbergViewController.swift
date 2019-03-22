@@ -84,9 +84,52 @@ class GutenbergViewController: UIViewController, PostEditor {
         return mediaInserterHelper.cancelUploadOfAllMedia()
     }
 
+    var mediaToInsertOnPost = [Media]()
+
+    func prepopulateMediaItems(_ media: [Media]) {
+        mediaToInsertOnPost = media
+    }
+
+    private func insertPrePopulatedMedia() {
+        for media in mediaToInsertOnPost {
+            guard
+                media.mediaType == .image, // just images for now
+                let mediaID = media.mediaID?.int32Value,
+                let mediaURLString = media.remoteURL,
+                let mediaURL = URL(string: mediaURLString) else {
+                    continue
+            }
+            gutenberg.appendMedia(id: mediaID, url: mediaURL)
+        }
+        mediaToInsertOnPost = []
+    }
+
+    private func showMediaSelectionOnStart() {
+        isOpenedDirectlyForPhotoPost = false
+        mediaPickerHelper.presentMediaPickerFullScreen(animated: true,
+                                                       dataSourceType: .device,
+                                                       callback: {(asset) in
+                                                        guard let phAsset = asset as? PHAsset else {
+                                                            return
+                                                        }
+                                                        self.mediaInserterHelper.insertFromDevice(asset: phAsset, callback: { (mediaID, mediaURL) in
+                                                            guard let mediaID = mediaID,
+                                                                let mediaURLString = mediaURL,
+                                                                let mediaURL = URL(string: mediaURLString) else {
+                                                                return
+                                                            }
+                                                            self.gutenberg.appendMedia(id: mediaID, url: mediaURL)
+                                                        })
+        })
+    }
+
+    // MARK: - Auto save post
+
     static let autoSaveInterval: TimeInterval = 5
 
     var autoSaveTimer: Timer?
+
+    // MARK: - Set content
 
     func setTitle(_ title: String) {
         guard gutenberg.isLoaded else {
@@ -115,6 +158,7 @@ class GutenbergViewController: UIViewController, PostEditor {
             attachmentDelegate = AztecAttachmentDelegate(post: post)
             mediaPickerHelper = GutenbergMediaPickerHelper(context: self, post: post)
             mediaInserterHelper = GutenbergMediaInserterHelper(post: post, gutenberg: gutenberg)
+            gutenbergImageLoader.post = post
             refreshInterface()
         }
     }
@@ -146,7 +190,14 @@ class GutenbergViewController: UIViewController, PostEditor {
 
     // MARK: - Private variables
 
-    private lazy var gutenberg = Gutenberg(dataSource: self)
+    private lazy var gutenbergImageLoader: GutenbergImageLoader = {
+        return GutenbergImageLoader(post: post)
+    }()
+
+    private lazy var gutenberg: Gutenberg = {
+        return Gutenberg(dataSource: self, extraModules: [gutenbergImageLoader])
+    }()
+
     private var requestHTMLReason: RequestHTMLReason?
     private(set) var mode: EditMode = .richText
     private var analyticsEditor: PostEditorAnalyticsSession.Editor {
@@ -357,6 +408,13 @@ extension GutenbergViewController: GutenbergBridgeDelegate {
         self.mediaInserterHelper.syncUploads()
     }
 
+    func gutenbergDidRequestMediaUploadCancelation(for mediaID: Int32) {
+        guard let media = mediaInserterHelper.mediaFor(uploadID: mediaID) else {
+            return
+        }
+        mediaInserterHelper.cancelUploadOf(media: media)
+    }
+
     func gutenbergDidRequestMediaUploadActionDialog(for mediaID: Int32) {
 
         guard let media = mediaInserterHelper.mediaFor(uploadID: mediaID) else {
@@ -425,6 +483,10 @@ extension GutenbergViewController: GutenbergBridgeDelegate {
             isFirstGutenbergLayout = false
         }
         if isFirstGutenbergLayout {
+            insertPrePopulatedMedia()
+            if isOpenedDirectlyForPhotoPost {
+                showMediaSelectionOnStart()
+            }
             focusTitleIfNeeded()
         }
     }
